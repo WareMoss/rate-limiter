@@ -1,4 +1,4 @@
-"""FastAPI wrapper for the rate limiter library.
+"""FastAPI wrapper for the rate limiter library .
 
 Thin HTTP layer only — no business logic lives here. All rate limiting
 decisions happen inside app/.
