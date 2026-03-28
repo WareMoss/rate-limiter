@@ -4,6 +4,9 @@ Thin HTTP layer only — no business logic lives here. All rate limiting
 decisions happen inside app/.
 """
 
+import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Literal
 
@@ -58,6 +61,20 @@ class ResetResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+
+
+class TestResult(BaseModel):
+    name: str
+    status: str  # "passed" | "failed" | "error"
+    message: str | None = None
+
+
+class TestRunResponse(BaseModel):
+    passed: int
+    failed: int
+    errors: int
+    duration: float
+    results: list[TestResult]
 
 
 class StateResponse(BaseModel):
@@ -144,6 +161,59 @@ def state(
         key=key,
         window_elapsed=elapsed,
         window_total=total,
+    )
+
+
+@app.get("/tests/run")
+def run_tests() -> TestRunResponse:
+    """Run the pytest suite and return per-test results."""
+    project_root = Path(__file__).parent.parent
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "-v", "--no-header", "--tb=short",
+         "--override-ini=addopts="],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,  # merge — avoids Windows pipe deadlock
+        cwd=project_root,
+        timeout=60,
+    )
+    output = proc.stdout.decode("utf-8", errors="replace")
+
+    results: list[TestResult] = []
+    # Parse lines like "tests/test_foo.py::TestClass::test_name PASSED"
+    line_re = re.compile(
+        r"^(tests/[\w/]+\.py::[\w:]+)\s+(PASSED|FAILED|ERROR)", re.MULTILINE
+    )
+    for m in line_re.finditer(output):
+        results.append(TestResult(
+            name=m.group(1),
+            status=m.group(2).lower(),
+        ))
+
+    # Attach failure messages — grab the short tb block after each FAILED header
+    fail_re = re.compile(
+        r"FAILED (tests/[\w/]+\.py::[\w:]+)[^\n]*\n(.*)(?=\nFAILED |\n={3}|\Z)",
+        re.DOTALL,
+    )
+    fail_msgs: dict[str, str] = {
+        m.group(1): m.group(2).strip() for m in fail_re.finditer(output)
+    }
+    for r in results:
+        if r.status == "failed" and r.name in fail_msgs:
+            r.message = fail_msgs[r.name]
+
+    passed = sum(1 for r in results if r.status == "passed")
+    failed = sum(1 for r in results if r.status == "failed")
+    errors = sum(1 for r in results if r.status == "error")
+
+    # Extract duration from summary line "X passed in Y.YYs"
+    duration = 0.0
+    dur_m = re.search(r"in (\d+\.\d+)s", output)
+    if dur_m:
+        duration = float(dur_m.group(1))
+
+    return TestRunResponse(
+        passed=passed, failed=failed, errors=errors,
+        duration=duration, results=results,
     )
 
 

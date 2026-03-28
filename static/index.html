@@ -412,6 +412,96 @@
       text-align: center;
       padding: 2.5rem 0;
     }
+
+    /* ── Test Runner ─────────────────────────────────────────────────────── */
+    .card-tests {
+      grid-column: 1 / 4;
+    }
+
+    .tests-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.2rem;
+      flex-wrap: wrap;
+    }
+
+    .tests-header .card-label { margin-bottom: 0; }
+
+    .btn-tests {
+      background: linear-gradient(135deg, var(--green), #00a855);
+      color: #000;
+    }
+
+    .tests-summary {
+      display: flex;
+      gap: 1.6rem;
+      font-size: .8rem;
+      margin-left: auto;
+      flex-wrap: wrap;
+    }
+
+    .tests-summary span { color: var(--dim); }
+    .tests-summary .t-pass { color: var(--green); font-weight: 700; }
+    .tests-summary .t-fail { color: var(--red);   font-weight: 700; }
+    .tests-summary .t-dur  { color: var(--dim); }
+
+    .test-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: .5rem;
+    }
+
+    .test-row {
+      display: flex;
+      align-items: flex-start;
+      gap: .6rem;
+      padding: .5rem .7rem;
+      border-radius: 8px;
+      font-size: .74rem;
+      border-left: 3px solid;
+      animation: slide-in .18s ease;
+    }
+
+    .test-row.passed { background: rgba(0,232,122,.05); border-color: var(--green); }
+    .test-row.failed { background: rgba(255,68,102,.07); border-color: var(--red);  }
+    .test-row.error  { background: rgba(255,180,0,.06);  border-color: #ffb400;     }
+
+    .test-icon { font-size: .85rem; line-height: 1.4; flex-shrink: 0; }
+    .test-name { flex: 1; word-break: break-all; line-height: 1.5; }
+    .test-name .test-module { color: var(--dim); }
+    .test-name .test-fn     { color: var(--text); font-weight: 600; }
+
+    .test-msg {
+      margin-top: .35rem;
+      padding: .35rem .5rem;
+      background: rgba(255,68,102,.08);
+      border-radius: 5px;
+      font-size: .68rem;
+      color: #ffaabb;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .tests-idle {
+      color: var(--dim);
+      font-size: .8rem;
+      text-align: center;
+      padding: 1.8rem 0;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,.15);
+      border-top-color: var(--green);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      vertical-align: middle;
+      margin-right: .4rem;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -539,6 +629,24 @@
   </div>
 
 </div><!-- /grid -->
+
+<!-- ── Test Runner ──────────────────────────────────────────────────────── -->
+<div style="max-width:1080px;margin:1.25rem auto 0;">
+  <div class="card card-tests">
+    <div class="tests-header">
+      <div class="card-label">Test Suite</div>
+      <button class="btn btn-tests" id="btn-tests">Run Tests</button>
+      <div class="tests-summary" id="tests-summary" style="display:none">
+        <span>Passed: <span class="t-pass" id="t-pass">0</span></span>
+        <span>Failed: <span class="t-fail" id="t-fail">0</span></span>
+        <span class="t-dur" id="t-dur"></span>
+      </div>
+    </div>
+    <div id="test-output">
+      <div class="tests-idle">Press <strong>Run Tests</strong> to execute the pytest suite</div>
+    </div>
+  </div>
+</div>
 
 <script>
   "use strict";
@@ -731,6 +839,69 @@
   $('inp-key').addEventListener('keydown', e => {
     if (e.key === 'Enter') doCheck();
   });
+
+  // ── Test runner ────────────────────────────────────────────────────────────
+  async function doRunTests() {
+    const btn    = $('btn-tests');
+    const output = $('test-output');
+    const summary = $('tests-summary');
+
+    btn.disabled = true;
+    output.innerHTML = '<div class="tests-idle"><span class="spinner"></span>Running pytest…</div>';
+    summary.style.display = 'none';
+
+    let data;
+    try {
+      const res = await fetch('/tests/run');
+      data = await res.json();
+    } catch (e) {
+      console.error('Test run fetch failed:', e);
+      output.innerHTML = '<div class="tests-idle" style="color:var(--red)">Failed to reach server</div>';
+      btn.disabled = false;
+      return;
+    }
+
+    // Summary bar
+    $('t-pass').textContent = data.passed;
+    $('t-fail').textContent = data.failed;
+    $('t-dur').textContent  = `${data.duration.toFixed(2)}s`;
+    summary.style.display = '';
+
+    // Build result rows
+    const grid = document.createElement('div');
+    grid.className = 'test-grid';
+
+    for (const t of data.results) {
+      const icons  = { passed: '✓', failed: '✗', error: '!' };
+      const icon   = icons[t.status] ?? '?';
+      // Split "tests/test_foo.py::Class::method" into module + fn
+      const parts   = t.name.split('::');
+      const fn      = parts.pop();
+      const module  = parts.join('::');
+
+      const row = document.createElement('div');
+      row.className = `test-row ${t.status}`;
+      row.innerHTML = `
+        <span class="test-icon">${icon}</span>
+        <span class="test-name">
+          <span class="test-module">${escHtml(module)}::</span><span class="test-fn">${escHtml(fn)}</span>
+          ${t.message ? `<div class="test-msg">${escHtml(t.message)}</div>` : ''}
+        </span>
+      `;
+      grid.appendChild(row);
+    }
+
+    output.innerHTML = '';
+    if (data.results.length === 0) {
+      output.innerHTML = '<div class="tests-idle">No tests found</div>';
+    } else {
+      output.appendChild(grid);
+    }
+
+    btn.disabled = false;
+  }
+
+  $('btn-tests').addEventListener('click', doRunTests);
 
   // ── Init ───────────────────────────────────────────────────────────────────
   pollState();
