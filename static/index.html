@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rate Limiter Dashboard</title>
+  <style>
+    /* ── Reset & tokens ─────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:           #08080f;
+      --card:         rgba(255 255 255 / 0.04);
+      --card-border:  rgba(255 255 255 / 0.08);
+      --blue:         #00d4ff;
+      --purple:       #7b61ff;
+      --green:        #00e87a;
+      --red:          #ff4466;
+      --text:         #dde0f0;
+      --dim:          rgba(221 224 240 / 0.45);
+      --radius:       14px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+      min-height: 100vh;
+      padding: 1.5rem 2rem 2rem;
+      background-image:
+        radial-gradient(ellipse 60% 50% at 15% 60%, rgba(123,97,255,.07) 0%, transparent 100%),
+        radial-gradient(ellipse 60% 50% at 85% 40%, rgba(0,212,255,.07) 0%, transparent 100%);
+    }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    header h1 {
+      font-size: clamp(1.5rem, 4vw, 2.2rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, var(--blue) 0%, var(--purple) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: .4rem;
+    }
+
+    header p {
+      color: var(--dim);
+      font-size: .8rem;
+    }
+
+    .live-dot {
+      display: inline-block;
+      width: 7px; height: 7px;
+      background: var(--green);
+      border-radius: 50%;
+      margin-right: .4rem;
+      animation: blink 2s ease-in-out infinite;
+    }
+
+    @keyframes blink { 0%,100% { opacity:1 } 50% { opacity:.3 } }
+
+    /* ── Grid layout ─────────────────────────────────────────────────────── */
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1.6fr;
+      grid-template-rows: auto auto;
+      gap: 1.25rem;
+      max-width: 1080px;
+      margin: 0 auto;
+    }
+
+    .card-controls { grid-column: 1 / 3; }
+    .card-log      { grid-row: 1 / 3; grid-column: 3; }
+
+    /* ── Card ────────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 1.4rem 1.5rem;
+      backdrop-filter: blur(16px);
+    }
+
+    .card-label {
+      font-size: .68rem;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color: var(--dim);
+      margin-bottom: 1.4rem;
+    }
+
+    /* ── Token Bucket visualisation ─────────────────────────────────────── */
+    .bucket-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: .9rem;
+    }
+
+    /* The opening at the top of the bucket */
+    .bucket-top {
+      width: 88px;
+      height: 7px;
+      border: 2px solid var(--blue);
+      border-bottom: none;
+      border-radius: 5px 5px 0 0;
+      opacity: .6;
+    }
+
+    /* The bucket body */
+    .bucket-body {
+      width: 88px;
+      height: 148px;
+      border: 2px solid var(--blue);
+      border-top: none;
+      border-radius: 0 0 16px 16px;
+      overflow: hidden;
+      position: relative;
+      background: rgba(0 8 30 / .8);
+      box-shadow: 0 0 18px rgba(0,212,255,.12), inset 0 0 30px rgba(0,0,0,.4);
+      transition: box-shadow .35s ease;
+    }
+
+    .bucket-body.flash-allow {
+      box-shadow: 0 0 30px rgba(0,232,122,.55), inset 0 0 30px rgba(0,0,0,.4);
+    }
+    .bucket-body.flash-deny {
+      box-shadow: 0 0 30px rgba(255,68,102,.55), inset 0 0 30px rgba(0,0,0,.4);
+    }
+
+    .bucket-fill {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: var(--level, 100%);
+      background: linear-gradient(0deg,
+        rgba(0,50,180,.95) 0%,
+        rgba(0,130,240,.85) 65%,
+        rgba(0,200,255,.75) 100%
+      );
+      transition: height .65s cubic-bezier(.34,1.15,.64,1);
+      border-radius: 0 0 14px 14px;
+    }
+
+    /* Animated wave on the water surface */
+    .bucket-fill::before {
+      content: '';
+      position: absolute;
+      top: -7px; left: -20%;
+      width: 140%; height: 14px;
+      border-radius: 50%;
+      background: rgba(120,210,255,.45);
+      animation: wave-bob 3s ease-in-out infinite;
+    }
+
+    @keyframes wave-bob {
+      0%,100% { transform: scaleX(1) translateY(0); }
+      50%      { transform: scaleX(.93) translateY(3px); }
+    }
+
+    /* Tick marks on the side */
+    .bucket-ticks {
+      position: absolute;
+      top: 0; right: 6px; bottom: 0;
+      display: flex; flex-direction: column; justify-content: space-evenly;
+      pointer-events: none;
+    }
+
+    .bucket-tick {
+      width: 6px; height: 1px;
+      background: rgba(255,255,255,.15);
+    }
+
+    .bucket-num {
+      text-align: center;
+    }
+
+    .bucket-num .val {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--blue);
+      line-height: 1;
+    }
+
+    .bucket-num .sub {
+      font-size: .72rem;
+      color: var(--dim);
+    }
+
+    .bucket-meta {
+      font-size: .72rem;
+      color: var(--dim);
+      text-align: center;
+    }
+
+    /* ── Fixed Window visualisation ──────────────────────────────────────── */
+    .window-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: .9rem;
+    }
+
+    .ring-wrap {
+      position: relative;
+      width: 136px; height: 136px;
+    }
+
+    .ring-wrap svg { transform: rotate(-90deg); }
+
+    .ring-center {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+    }
+
+    .ring-center .val {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--purple);
+      line-height: 1;
+    }
+
+    .ring-center .sub {
+      font-size: .65rem;
+      color: var(--dim);
+      margin-top: .15rem;
+    }
+
+    /* Window time progress bar (how far through the 60 s window we are) */
+    .time-bar-wrap {
+      width: 100%;
+    }
+
+    .time-bar-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: .65rem;
+      color: var(--dim);
+      margin-bottom: .3rem;
+    }
+
+    .time-bar {
+      height: 5px;
+      background: rgba(255 255 255 / .07);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .time-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--purple), var(--blue));
+      border-radius: 3px;
+      width: var(--tp, 100%);
+      transition: width .5s linear;
+    }
+
+    .window-meta {
+      font-size: .72rem;
+      color: var(--dim);
+      text-align: center;
+    }
+
+    /* ── Controls ────────────────────────────────────────────────────────── */
+    .controls-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .9rem;
+      align-items: flex-end;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: .35rem;
+      flex: 1;
+      min-width: 130px;
+    }
+
+    .field label {
+      font-size: .65rem;
+      text-transform: uppercase;
+      letter-spacing: .09em;
+      color: var(--dim);
+    }
+
+    input, select {
+      background: rgba(255 255 255 / .06);
+      border: 1px solid rgba(255 255 255 / .11);
+      border-radius: 9px;
+      color: var(--text);
+      padding: .55rem .8rem;
+      font: inherit;
+      font-size: .88rem;
+      outline: none;
+      transition: border-color .2s;
+    }
+    input:focus, select:focus { border-color: var(--blue); }
+    select option { background: #14142a; }
+
+    .btn {
+      padding: .55rem 1.1rem;
+      border: none;
+      border-radius: 9px;
+      font: inherit;
+      font-size: .82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform .15s, filter .15s, opacity .15s;
+      white-space: nowrap;
+    }
+    .btn:hover  { transform: translateY(-1px); filter: brightness(1.12); }
+    .btn:active { transform: translateY(0);    filter: brightness(.95); }
+    .btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+
+    .btn-check { background: linear-gradient(135deg, var(--blue), #0077bb); color: #000; }
+    .btn-reset { background: rgba(255,68,102,.13); color: var(--red);    border: 1px solid rgba(255,68,102,.25); }
+    .btn-flood { background: rgba(123,97,255,.13);  color: var(--purple); border: 1px solid rgba(123,97,255,.25); }
+
+    .stats-row {
+      display: flex;
+      gap: 1.8rem;
+      margin-top: 1.1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--card-border);
+      flex-wrap: wrap;
+    }
+
+    .stat {
+      display: flex;
+      align-items: center;
+      gap: .45rem;
+      font-size: .82rem;
+    }
+
+    .dot { width: 7px; height: 7px; border-radius: 50%; }
+    .dot-allow { background: var(--green); }
+    .dot-deny  { background: var(--red); }
+
+    .stat-n { font-weight: 700; font-size: 1.05rem; }
+    .stat-n.allow { color: var(--green); }
+    .stat-n.deny  { color: var(--red); }
+
+    .stat-key-info {
+      margin-left: auto;
+      font-size: .72rem;
+      color: var(--dim);
+    }
+    .stat-key-info span { color: var(--text); }
+
+    /* ── Log ─────────────────────────────────────────────────────────────── */
+    .card-log {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .log-list {
+      flex: 1;
+      overflow-y: auto;
+      max-height: 520px;
+      display: flex;
+      flex-direction: column;
+      gap: .4rem;
+      padding-right: .25rem;
+    }
+
+    .log-list::-webkit-scrollbar       { width: 3px; }
+    .log-list::-webkit-scrollbar-track { background: transparent; }
+    .log-list::-webkit-scrollbar-thumb { background: rgba(255 255 255 / .12); border-radius: 2px; }
+
+    .log-entry {
+      padding: .55rem .75rem;
+      border-radius: 9px;
+      font-size: .75rem;
+      border-left: 3px solid;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      row-gap: .15rem;
+      animation: slide-in .22s ease;
+    }
+
+    @keyframes slide-in {
+      from { transform: translateX(14px); opacity: 0; }
+      to   { transform: translateX(0);    opacity: 1; }
+    }
+
+    .log-entry.allow { background: rgba(0,232,122,.05); border-color: var(--green); }
+    .log-entry.deny  { background: rgba(255,68,102,.05); border-color: var(--red);  }
+
+    .log-key  { font-weight: 600; }
+    .log-algo { color: var(--dim); }
+
+    .log-status { font-weight: 700; font-size: .68rem; text-transform: uppercase; }
+    .allow .log-status { color: var(--green); }
+    .deny  .log-status { color: var(--red); }
+
+    .log-rem  { color: var(--dim); font-size: .68rem; }
+    .log-time { color: var(--dim); font-size: .62rem; text-align: right; align-self: end; }
+
+    .log-empty {
+      color: var(--dim);
+      font-size: .8rem;
+      text-align: center;
+      padding: 2.5rem 0;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ Rate Limiter Dashboard</h1>
+  <p><span class="live-dot"></span>Live · Token Bucket &amp; Fixed Window · Python + FastAPI</p>
+</header>
+
+<div class="grid">
+
+  <!-- ── Token Bucket card ─────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="card-label">Token Bucket</div>
+    <div class="bucket-wrap">
+
+      <div class="bucket-top"></div>
+      <div class="bucket-body" id="bucket-vis">
+        <div class="bucket-fill" id="bucket-fill" style="--level:100%"></div>
+        <div class="bucket-ticks">
+          <div class="bucket-tick"></div><div class="bucket-tick"></div>
+          <div class="bucket-tick"></div><div class="bucket-tick"></div>
+          <div class="bucket-tick"></div>
+        </div>
+      </div>
+
+      <div class="bucket-num">
+        <div class="val" id="bucket-rem">10</div>
+        <div class="sub">of <span id="bucket-cap">10</span> tokens</div>
+      </div>
+      <div class="bucket-meta" id="bucket-rate">+1.0 tokens / sec</div>
+
+    </div>
+  </div>
+
+  <!-- ── Fixed Window card ─────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="card-label">Fixed Window</div>
+    <div class="window-wrap">
+
+      <div class="ring-wrap">
+        <svg viewBox="0 0 136 136" width="136" height="136">
+          <defs>
+            <linearGradient id="rg" x1="1" y1="0" x2="0" y2="1">
+              <stop offset="0%"   stop-color="#7b61ff"/>
+              <stop offset="100%" stop-color="#00d4ff"/>
+            </linearGradient>
+          </defs>
+          <!-- track -->
+          <circle cx="68" cy="68" r="56" fill="none"
+                  stroke="rgba(255,255,255,.07)" stroke-width="11"/>
+          <!-- quota ring -->
+          <circle cx="68" cy="68" r="56" fill="none"
+                  stroke="url(#rg)" stroke-width="11"
+                  stroke-linecap="round"
+                  stroke-dasharray="351.86"
+                  stroke-dashoffset="0"
+                  id="quota-ring"/>
+        </svg>
+        <div class="ring-center">
+          <span class="val" id="window-rem">10</span>
+          <span class="sub">of <span id="window-max">10</span> req</span>
+        </div>
+      </div>
+
+      <div class="time-bar-wrap">
+        <div class="time-bar-label">
+          <span>window time</span>
+          <span id="window-countdown">60s</span>
+        </div>
+        <div class="time-bar">
+          <div class="time-bar-fill" id="time-fill" style="--tp:100%"></div>
+        </div>
+      </div>
+
+      <div class="window-meta" id="window-meta">60 s window</div>
+
+    </div>
+  </div>
+
+  <!-- ── Request Log card ──────────────────────────────────────────────── -->
+  <div class="card card-log">
+    <div class="card-label">Request Log</div>
+    <div class="log-list" id="log-list">
+      <div class="log-empty" id="log-empty">No requests yet — fire one below</div>
+    </div>
+  </div>
+
+  <!-- ── Controls card ─────────────────────────────────────────────────── -->
+  <div class="card card-controls">
+    <div class="card-label">Controls</div>
+
+    <div class="controls-row">
+      <div class="field">
+        <label for="inp-key">Caller Key</label>
+        <input id="inp-key" type="text" value="user_1" placeholder="user_1" />
+      </div>
+      <div class="field">
+        <label for="sel-algo">Algorithm</label>
+        <select id="sel-algo">
+          <option value="token_bucket">Token Bucket</option>
+          <option value="fixed_window">Fixed Window</option>
+        </select>
+      </div>
+      <button class="btn btn-check" id="btn-check">Check Request</button>
+      <button class="btn btn-reset" id="btn-reset">Reset Key</button>
+      <button class="btn btn-flood" id="btn-flood">Flood ×15</button>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat">
+        <div class="dot dot-allow"></div>
+        <span>Allowed</span>
+        <span class="stat-n allow" id="n-allow">0</span>
+      </div>
+      <div class="stat">
+        <div class="dot dot-deny"></div>
+        <span>Denied</span>
+        <span class="stat-n deny" id="n-deny">0</span>
+      </div>
+      <div class="stat-key-info">
+        Watching key: <span id="watching-key">user_1</span>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /grid -->
+
+<script>
+  "use strict";
+
+  // ── Constants ──────────────────────────────────────────────────────────────
+  const QUOTA_CIRC = 351.86;  // 2π × 56 (SVG ring circumference)
+  const POLL_MS    = 700;
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  let nAllow = 0, nDeny = 0;
+
+  // ── DOM refs ───────────────────────────────────────────────────────────────
+  const $ = id => document.getElementById(id);
+  const bucketVis     = $('bucket-vis');
+  const bucketFill    = $('bucket-fill');
+  const bucketRem     = $('bucket-rem');
+  const bucketCap     = $('bucket-cap');
+  const quotaRing     = $('quota-ring');
+  const windowRem     = $('window-rem');
+  const windowMax     = $('window-max');
+  const windowMeta    = $('window-meta');
+  const windowCountdown = $('window-countdown');
+  const timeFill      = $('time-fill');
+  const logList       = $('log-list');
+  const nAllowEl      = $('n-allow');
+  const nDenyEl       = $('n-deny');
+  const watchingKey   = $('watching-key');
+
+  // ── API helpers ────────────────────────────────────────────────────────────
+  const api = {
+    async check(key, algorithm) {
+      const res = await fetch('/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, algorithm }),
+      });
+      return res.json();
+    },
+
+    async reset(key, algorithm) {
+      const res = await fetch('/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, algorithm }),
+      });
+      return res.json();
+    },
+
+    async state(algorithm, key) {
+      const res = await fetch(`/state/${algorithm}/${encodeURIComponent(key)}`);
+      if (!res.ok) return null;
+      return res.json();
+    },
+  };
+
+  // ── Visualisation helpers ──────────────────────────────────────────────────
+  function setBucketLevel(remaining, capacity) {
+    const pct = capacity > 0 ? Math.round((remaining / capacity) * 100) : 0;
+    bucketFill.style.setProperty('--level', `${pct}%`);
+    bucketRem.textContent = remaining;
+    bucketCap.textContent = capacity;
+  }
+
+  function flashBucket(allowed) {
+    const cls = allowed ? 'flash-allow' : 'flash-deny';
+    bucketVis.classList.add(cls);
+    setTimeout(() => bucketVis.classList.remove(cls), 650);
+  }
+
+  function setWindowRing(remaining, max) {
+    const pct     = max > 0 ? remaining / max : 0;
+    const offset  = QUOTA_CIRC * (1 - pct);
+    quotaRing.style.strokeDashoffset = offset;
+    windowRem.textContent = remaining;
+    windowMax.textContent = max;
+  }
+
+  function setWindowTime(elapsed, total) {
+    if (total == null || elapsed == null) return;
+    const left  = Math.max(0, total - elapsed);
+    const pct   = Math.max(0, (left / total) * 100);
+    timeFill.style.setProperty('--tp', `${pct.toFixed(1)}%`);
+    windowCountdown.textContent = `${Math.ceil(left)}s`;
+    windowMeta.textContent = `${total}s window · resets in ${Math.ceil(left)}s`;
+  }
+
+  function addLogEntry(result) {
+    const empty = $('log-empty');
+    if (empty) empty.remove();
+
+    const cls   = result.allowed ? 'allow' : 'deny';
+    const mark  = result.allowed ? '✓ allowed' : '✗ denied';
+    const algo  = result.algorithm === 'token_bucket' ? 'TB' : 'FW';
+    const now   = new Date().toLocaleTimeString('en-GB', { hour12: false });
+
+    const el = document.createElement('div');
+    el.className = `log-entry ${cls}`;
+    el.innerHTML = `
+      <span class="log-key">${escHtml(result.key)}</span>
+      <span class="log-status">${mark}</span>
+      <span class="log-algo">${algo} · ${result.remaining} remaining</span>
+      <span class="log-time">${now}</span>
+    `;
+
+    logList.prepend(el);
+
+    // Keep log bounded
+    while (logList.children.length > 120) {
+      logList.removeChild(logList.lastChild);
+    }
+  }
+
+  function updateStats() {
+    nAllowEl.textContent = nAllow;
+    nDenyEl.textContent  = nDeny;
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── State polling ──────────────────────────────────────────────────────────
+  async function pollState() {
+    const key = $('inp-key').value.trim() || 'user_1';
+    watchingKey.textContent = key;
+
+    const [bucket, win] = await Promise.all([
+      api.state('token_bucket', key),
+      api.state('fixed_window',  key),
+    ]);
+
+    if (bucket) {
+      setBucketLevel(bucket.remaining, bucket.capacity);
+    }
+    if (win) {
+      setWindowRing(win.remaining, win.capacity);
+      setWindowTime(win.window_elapsed, win.window_total);
+    }
+  }
+
+  // ── Button handlers ────────────────────────────────────────────────────────
+  async function doCheck() {
+    const key  = $('inp-key').value.trim() || 'user_1';
+    const algo = $('sel-algo').value;
+    const res  = await api.check(key, algo);
+    if (res.allowed) nAllow++; else nDeny++;
+    addLogEntry(res);
+    updateStats();
+    if (algo === 'token_bucket') flashBucket(res.allowed);
+    await pollState();
+  }
+
+  async function doReset() {
+    const key  = $('inp-key').value.trim() || 'user_1';
+    const algo = $('sel-algo').value;
+    await api.reset(key, algo);
+    await pollState();
+  }
+
+  async function doFlood() {
+    const key   = $('inp-key').value.trim() || 'user_1';
+    const algo  = $('sel-algo').value;
+    const btn   = $('btn-flood');
+    btn.disabled = true;
+
+    for (let i = 0; i < 15; i++) {
+      const res = await api.check(key, algo);
+      if (res.allowed) nAllow++; else nDeny++;
+      addLogEntry(res);
+      updateStats();
+      if (algo === 'token_bucket') flashBucket(res.allowed);
+      await pollState();
+      // Small delay so each request is visible in the log
+      await new Promise(r => setTimeout(r, 75));
+    }
+
+    btn.disabled = false;
+  }
+
+  $('btn-check').addEventListener('click', doCheck);
+  $('btn-reset').addEventListener('click', doReset);
+  $('btn-flood').addEventListener('click', doFlood);
+
+  // Update "watching key" label as user types
+  $('inp-key').addEventListener('input', e => {
+    watchingKey.textContent = e.target.value.trim() || 'user_1';
+  });
+
+  // Allow Enter key in the key input to fire a check
+  $('inp-key').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doCheck();
+  });
+
+  // ── Init ───────────────────────────────────────────────────────────────────
+  pollState();
+  setInterval(pollState, POLL_MS);
+</script>
+</body>
+</html>

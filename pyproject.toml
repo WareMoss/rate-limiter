@@ -1,0 +1,20 @@
+[project]
+name = "rate-limiter"
+version = "1.0.0"
+description = "A Python rate limiting library implementing Token Bucket and Fixed Window algorithms"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=app --cov-report=term-missing --cov-fail-under=90"
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
