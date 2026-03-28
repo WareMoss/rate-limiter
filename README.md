@@ -1,47 +1,74 @@
 # Rate Limiter
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-94%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-%3E90%25-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Made with love](https://img.shields.io/badge/made%20with-%E2%9D%A4-red)
 
-A Python library implementing two production-ready rate limiting algorithms: Token Bucket and Fixed Window. Both share a common abstract interface so they are interchangeable anywhere a `RateLimiter` is accepted. A FastAPI wrapper exposes the library over HTTP for integration testing and demonstration.
+A Python rate limiting library with three algorithms and two storage backends. All implementations share a common abstract interface so they are interchangeable anywhere a `RateLimiter` is accepted. A FastAPI wrapper exposes them over HTTP, and a live dashboard lets you visualise the algorithms in action.
 
 ---
 
 ## Algorithms
 
-| Algorithm | How it works | Burst handling | Boundary spike |
-|---|---|---|---|
-| **Token Bucket** | Tokens accumulate at a fixed rate up to a capacity ceiling. Each request consumes one token. | Absorbs bursts up to `capacity` | No |
-| **Fixed Window** | Counts requests within a fixed time slot. Counter resets when the window expires. | None — limit is hard per window | Yes — two windows back-to-back can double throughput |
+| Algorithm | How it works | Boundary burst |
+|---|---|---|
+| **Token Bucket** | Tokens refill at a fixed rate up to a capacity ceiling. Each request consumes one token. | No |
+| **Fixed Window** | Counts requests in a fixed time slot. Counter resets when the window expires. | Yes — requests at the tail of one window plus requests at the head of the next can briefly double throughput |
+| **Sliding Window** | Tracks the timestamp of every request and counts only those within the last N seconds. | No — the limit holds across any rolling slice of the window, not just aligned buckets |
 
-Use **Token Bucket** when you want to allow short bursts while enforcing a sustained average rate.
-Use **Fixed Window** when simplicity and predictable resets matter more than burst control.
+**Token Bucket** — good when short bursts are acceptable but you want a sustained average enforced.
+**Fixed Window** — simplest to reason about; predictable resets.
+**Sliding Window** — strictest; no boundary loophole, at the cost of O(max\_requests) memory per key.
+
+---
+
+## Storage backends
+
+Each algorithm ships with an in-memory implementation (default) and a Redis-backed one.
+
+| Class | Backend |
+|---|---|
+| `TokenBucket` | in-memory |
+| `FixedWindow` | in-memory |
+| `SlidingWindow` | in-memory |
+| `RedisTokenBucket` | Redis (Lua script — atomic refill + consume) |
+| `RedisFixedWindow` | Redis (Lua script — atomic INCR + TTL) |
+| `RedisSlidingWindow` | Redis sorted set (Lua script — atomic evict + check + add) |
+
+The server picks which backend to use at startup. Set `REDIS_URL` to switch to Redis; leave it unset and it runs in-memory. The HTTP API is identical either way.
 
 ---
 
 ## Complexity
 
-| Algorithm | Time (per request) | Space |
+| Algorithm | Time | Space |
 |---|---|---|
-| Token Bucket | O(1) | O(n) — one entry per unique key |
-| Fixed Window | O(1) | O(n) — one entry per unique key |
+| Token Bucket | O(1) | O(n) keys |
+| Fixed Window | O(1) | O(n) keys |
+| Sliding Window | O(r) per request where r = requests in window | O(max\_requests) per key |
 
-Both algorithms use a dictionary keyed by caller identifier. All operations (lookup, update, reset) are O(1) regardless of the number of tracked keys.
+Token Bucket and Fixed Window use a dict keyed by caller ID — all operations are O(1). Sliding Window evicts expired timestamps on each call, which is bounded by the window size.
 
 ---
 
-## Installation
+## Running the dashboard
 
 ```bash
-pip install -r requirements.txt
+uvicorn api.server:app --reload
+```
+
+Then open http://localhost:8000. The dashboard shows live visualisations for all three algorithms and lets you fire individual requests, flood a key, or reset state. There is also a **Run Tests** button that executes the full pytest suite and displays per-test results in the browser.
+
+To use Redis instead of in-memory state:
+
+```bash
+REDIS_URL=redis://localhost:6379 uvicorn api.server:app --reload
 ```
 
 ---
 
-## Usage
+## Library usage
 
 ### Token Bucket
 
@@ -50,12 +77,12 @@ from app.token_bucket import TokenBucket
 
 limiter = TokenBucket(capacity=10, refill_rate=1.0)
 
-if limiter.is_allowed("user_123"):
-    print(f"Allowed. Remaining: {limiter.remaining('user_123')}")
+allowed, remaining = limiter.allow("user_123")
+if allowed:
+    print(f"OK — {remaining} tokens left")
 else:
-    print("Rate limit exceeded.")
+    print("Rate limit exceeded")
 
-# Reset a specific key
 limiter.reset("user_123")
 ```
 
@@ -65,86 +92,87 @@ limiter.reset("user_123")
 from app.fixed_window import FixedWindow
 
 limiter = FixedWindow(max_requests=100, window_seconds=60)
+allowed, remaining = limiter.allow("ip_10.0.0.1")
+```
 
-if limiter.is_allowed("ip_10.0.0.1"):
-    print(f"Allowed. Remaining: {limiter.remaining('ip_10.0.0.1')}")
-else:
-    print("Rate limit exceeded.")
+### Sliding Window
+
+```python
+from app.sliding_window import SlidingWindow
+
+limiter = SlidingWindow(max_requests=100, window_seconds=60)
+allowed, remaining = limiter.allow("user_123")
+```
+
+### Redis backends
+
+```python
+import redis
+from app.redis_token_bucket import RedisTokenBucket
+
+client = redis.Redis.from_url("redis://localhost:6379")
+limiter = RedisTokenBucket(client, capacity=10, refill_rate=1.0)
+allowed, remaining = limiter.allow("user_123")
 ```
 
 ### Polymorphic usage
 
+All six classes implement `RateLimiter`, so you can swap backends without touching call sites:
+
 ```python
 from app.base import RateLimiter
-from app.token_bucket import TokenBucket
-from app.fixed_window import FixedWindow
 
-def process_request(limiter: RateLimiter, key: str) -> bool:
+def handle(limiter: RateLimiter, key: str) -> bool:
     return limiter.is_allowed(key)
-
-# Either implementation works — same interface
-process_request(TokenBucket(capacity=5, refill_rate=1.0), "user_1")
-process_request(FixedWindow(max_requests=5, window_seconds=10), "user_1")
 ```
 
 ---
 
-## API
-
-Start the server:
-
-```bash
-uvicorn api.server:app --reload
-```
+## HTTP API
 
 ### `POST /check`
 
-Check whether a request is allowed.
+Check whether a request is allowed (and consume a slot).
 
-**Request body:**
 ```json
 { "key": "user_1", "algorithm": "token_bucket" }
 ```
 
-**Response:**
+`algorithm` accepts `token_bucket`, `fixed_window`, or `sliding_window`.
+
 ```json
 { "allowed": true, "remaining": 9, "algorithm": "token_bucket", "key": "user_1" }
 ```
 
 ### `POST /reset`
 
-Reset the rate limit state for a key.
+Clear state for a key.
 
-**Request body:**
 ```json
-{ "key": "user_1", "algorithm": "fixed_window" }
+{ "key": "user_1", "algorithm": "sliding_window" }
 ```
 
-**Response:**
-```json
-{ "reset": true, "key": "user_1" }
-```
+### `GET /state/{algorithm}/{key}`
+
+Current quota state — polled by the dashboard.
 
 ### `GET /health`
 
-Liveness probe.
-
-**Response:**
 ```json
-{ "status": "ok" }
+{ "status": "ok", "backend": "memory" }
 ```
+
+`backend` is `"memory"` or `"redis"` depending on how the server was started.
 
 ---
 
-## Running Tests
+## Running tests
 
 ```bash
 pytest
 ```
 
-Runs all 22 tests with coverage reporting. The suite enforces ≥ 90% coverage and will fail the run if coverage drops below that threshold.
-
-To run linting and type checks:
+94 tests across all six implementations. Coverage is enforced at ≥ 90% and will fail the run if it drops. Redis tests use `fakeredis` so no running Redis instance is needed.
 
 ```bash
 ruff check app/ tests/
@@ -153,27 +181,33 @@ mypy app/
 
 ---
 
-## Project Structure
+## Project structure
 
 ```
 rate-limiter/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml          # GitHub Actions: lint, type check, test
+│       └── ci.yml                  # lint → typecheck → pytest
 ├── app/
-│   ├── __init__.py
-│   ├── base.py             # Abstract RateLimiter interface
-│   ├── exceptions.py       # InvalidConfigError, RateLimitExceededError
-│   ├── fixed_window.py     # Fixed Window implementation
-│   └── token_bucket.py     # Token Bucket implementation
+│   ├── base.py                     # RateLimiter ABC
+│   ├── exceptions.py
+│   ├── token_bucket.py
+│   ├── fixed_window.py
+│   ├── sliding_window.py
+│   ├── redis_token_bucket.py
+│   ├── redis_fixed_window.py
+│   └── redis_sliding_window.py
 ├── api/
-│   └── server.py           # FastAPI HTTP wrapper
+│   └── server.py                   # FastAPI wrapper
+├── static/
+│   └── index.html                  # live dashboard
 ├── tests/
-│   ├── __init__.py
+│   ├── test_token_bucket.py
 │   ├── test_fixed_window.py
-│   └── test_token_bucket.py
-├── .gitignore
+│   ├── test_sliding_window.py
+│   ├── test_redis_token_bucket.py
+│   ├── test_redis_fixed_window.py
+│   └── test_redis_sliding_window.py
 ├── pyproject.toml
-├── requirements.txt
-└── README.md
+└── requirements.txt
 ```
