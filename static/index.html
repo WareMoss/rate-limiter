@@ -68,15 +68,15 @@
     /* ── Grid layout ─────────────────────────────────────────────────────── */
     .grid {
       display: grid;
-      grid-template-columns: 1fr 1fr 1.6fr;
+      grid-template-columns: 1fr 1fr 1fr 1.6fr;
       grid-template-rows: auto auto;
       gap: 1.25rem;
-      max-width: 1080px;
+      max-width: 1200px;
       margin: 0 auto;
     }
 
-    .card-controls { grid-column: 1 / 3; }
-    .card-log      { grid-row: 1 / 3; grid-column: 3; }
+    .card-controls { grid-column: 1 / 4; }
+    .card-log      { grid-row: 1 / 3; grid-column: 4; }
 
     /* ── Card ────────────────────────────────────────────────────────────── */
     .card {
@@ -508,7 +508,7 @@
 
 <header>
   <h1>⚡ Rate Limiter Dashboard</h1>
-  <p><span class="live-dot"></span>Live · Token Bucket &amp; Fixed Window · Python + FastAPI</p>
+  <p><span class="live-dot"></span>Live · Token Bucket, Fixed Window &amp; Sliding Window · Python + FastAPI</p>
 </header>
 
 <div class="grid">
@@ -582,6 +582,51 @@
     </div>
   </div>
 
+  <!-- ── Sliding Window card ──────────────────────────────────────────── -->
+  <div class="card">
+    <div class="card-label">Sliding Window</div>
+    <div class="window-wrap">
+
+      <div class="ring-wrap">
+        <svg viewBox="0 0 136 136" width="136" height="136">
+          <defs>
+            <linearGradient id="sg" x1="1" y1="0" x2="0" y2="1">
+              <stop offset="0%"   stop-color="#00e87a"/>
+              <stop offset="100%" stop-color="#00d4ff"/>
+            </linearGradient>
+          </defs>
+          <circle cx="68" cy="68" r="56" fill="none"
+                  stroke="rgba(255,255,255,.07)" stroke-width="11"/>
+          <circle cx="68" cy="68" r="56" fill="none"
+                  stroke="url(#sg)" stroke-width="11"
+                  stroke-linecap="round"
+                  stroke-dasharray="351.86"
+                  stroke-dashoffset="0"
+                  id="sw-ring"/>
+        </svg>
+        <div class="ring-center">
+          <span class="val" id="sw-rem" style="color:var(--green)">10</span>
+          <span class="sub">of <span id="sw-max">10</span> req</span>
+        </div>
+      </div>
+
+      <div class="time-bar-wrap">
+        <div class="time-bar-label">
+          <span>oldest request age</span>
+          <span id="sw-countdown">0s</span>
+        </div>
+        <div class="time-bar">
+          <div class="time-bar-fill" id="sw-time-fill"
+               style="--tp:0%;background:linear-gradient(90deg,var(--green),var(--blue))">
+          </div>
+        </div>
+      </div>
+
+      <div class="window-meta" id="sw-meta">60 s rolling window</div>
+
+    </div>
+  </div>
+
   <!-- ── Request Log card ──────────────────────────────────────────────── -->
   <div class="card card-log">
     <div class="card-label">Request Log</div>
@@ -604,6 +649,7 @@
         <select id="sel-algo">
           <option value="token_bucket">Token Bucket</option>
           <option value="fixed_window">Fixed Window</option>
+          <option value="sliding_window">Sliding Window</option>
         </select>
       </div>
       <button class="btn btn-check" id="btn-check">Check Request</button>
@@ -665,11 +711,17 @@
   const bucketRem     = $('bucket-rem');
   const bucketCap     = $('bucket-cap');
   const quotaRing     = $('quota-ring');
-  const windowRem     = $('window-rem');
-  const windowMax     = $('window-max');
-  const windowMeta    = $('window-meta');
+  const windowRem       = $('window-rem');
+  const windowMax       = $('window-max');
+  const windowMeta      = $('window-meta');
   const windowCountdown = $('window-countdown');
-  const timeFill      = $('time-fill');
+  const timeFill        = $('time-fill');
+  const swRing          = $('sw-ring');
+  const swRem           = $('sw-rem');
+  const swMax           = $('sw-max');
+  const swMeta          = $('sw-meta');
+  const swCountdown     = $('sw-countdown');
+  const swTimeFill      = $('sw-time-fill');
   const logList       = $('log-list');
   const nAllowEl      = $('n-allow');
   const nDenyEl       = $('n-deny');
@@ -739,7 +791,8 @@
 
     const cls   = result.allowed ? 'allow' : 'deny';
     const mark  = result.allowed ? '✓ allowed' : '✗ denied';
-    const algo  = result.algorithm === 'token_bucket' ? 'TB' : 'FW';
+    const algoMap = { token_bucket: 'TB', fixed_window: 'FW', sliding_window: 'SW' };
+    const algo  = algoMap[result.algorithm] ?? result.algorithm;
     const now   = new Date().toLocaleTimeString('en-GB', { hour12: false });
 
     const el = document.createElement('div');
@@ -768,14 +821,32 @@
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  function setSlidingRing(remaining, max) {
+    const pct    = max > 0 ? remaining / max : 0;
+    const offset = QUOTA_CIRC * (1 - pct);
+    swRing.style.strokeDashoffset = offset;
+    swRem.textContent = remaining;
+    swMax.textContent = max;
+  }
+
+  function setSlidingTime(oldestAge, total) {
+    if (total == null || oldestAge == null) return;
+    // Bar shows how far through the window the oldest request is
+    const pct = total > 0 ? Math.min(100, (oldestAge / total) * 100) : 0;
+    swTimeFill.style.setProperty('--tp', `${pct.toFixed(1)}%`);
+    swCountdown.textContent = oldestAge > 0 ? `${oldestAge.toFixed(1)}s ago` : '—';
+    swMeta.textContent = `${total}s rolling window · oldest ${oldestAge > 0 ? oldestAge.toFixed(1) + 's ago' : '—'}`;
+  }
+
   // ── State polling ──────────────────────────────────────────────────────────
   async function pollState() {
     const key = $('inp-key').value.trim() || 'user_1';
     watchingKey.textContent = key;
 
-    const [bucket, win] = await Promise.all([
-      api.state('token_bucket', key),
-      api.state('fixed_window',  key),
+    const [bucket, win, sw] = await Promise.all([
+      api.state('token_bucket',   key),
+      api.state('fixed_window',   key),
+      api.state('sliding_window', key),
     ]);
 
     if (bucket) {
@@ -784,6 +855,10 @@
     if (win) {
       setWindowRing(win.remaining, win.capacity);
       setWindowTime(win.window_elapsed, win.window_total);
+    }
+    if (sw) {
+      setSlidingRing(sw.remaining, sw.capacity);
+      setSlidingTime(sw.window_elapsed, sw.window_total);
     }
   }
 
