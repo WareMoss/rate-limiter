@@ -1,3 +1,7 @@
+## WARNING ##
+
+Claude Ai was used to make this README pretty as well as improve the UI and readability of my comments. I also used it to rip apart and suggest improvements and fixtures to my code.
+
 # Rate Limiter
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
