@@ -123,7 +123,8 @@ All six classes implement `RateLimiter`, so you can swap backends without touchi
 from app.base import RateLimiter
 
 def handle(limiter: RateLimiter, key: str) -> bool:
-    return limiter.is_allowed(key)
+    allowed, _ = limiter.allow(key)
+    return allowed
 ```
 
 ---
@@ -209,5 +210,6 @@ rate-limiter/
 │   ├── test_redis_fixed_window.py
 │   └── test_redis_sliding_window.py
 ├── pyproject.toml
-└── requirements.txt
+├── requirements.txt
+└── LICENSE
 ```
